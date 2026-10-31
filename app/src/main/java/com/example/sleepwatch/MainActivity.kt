@@ -2,6 +2,7 @@ package com.example.sleepwatch
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
@@ -9,6 +10,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.Gravity
 import android.view.View
 import android.widget.Button
 import android.widget.CheckBox
@@ -26,6 +28,7 @@ class MainActivity : Activity() {
     private lateinit var levelBar: ProgressBar
     private lateinit var delayCheck: CheckBox
     private lateinit var listBox: LinearLayout
+    private lateinit var settingsBox: LinearLayout
     private var wasRunning = false
     private var openAfterStop = false
 
@@ -69,6 +72,14 @@ class MainActivity : Activity() {
         card.addView(mainButton, Ui.full(this, 12, Ui.dp(this, 56)))
         root.addView(card, Ui.full(this, 20))
 
+        // 設定
+        val settingsCard = Ui.card(this)
+        settingsCard.addView(Ui.text(this, "設定", 16f, Ui.TEXT, bold = true))
+        settingsBox = LinearLayout(this)
+        settingsBox.orientation = LinearLayout.VERTICAL
+        settingsCard.addView(settingsBox, Ui.full(this, 4))
+        root.addView(settingsCard, Ui.full(this, 16))
+
         // 歷史紀錄
         root.addView(Ui.text(this, "過去的紀錄", 18f, Ui.TEXT, bold = true), Ui.full(this, 28))
         listBox = LinearLayout(this)
@@ -101,6 +112,8 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         wasRunning = SleepService.running
+        if (!SleepService.running) Session.cleanupOldClips(this, Prefs.retentionDays(this))
+        refreshSettings()
         refreshList()
         handler.post(tick)
     }
@@ -198,6 +211,75 @@ class MainActivity : Activity() {
             row.setOnClickListener { openNight(s.id) }
             listBox.addView(row, Ui.full(this, 10))
         }
+    }
+
+    private fun settingRow(label: String, value: String, onClick: () -> Unit) {
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
+        row.setPadding(0, Ui.dp(this, 10), 0, Ui.dp(this, 10))
+        row.addView(Ui.text(this, label, 15f, Ui.DIM),
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        row.addView(Ui.text(this, "$value  ›", 15f, Ui.ACCENT, bold = true))
+        row.isClickable = true
+        row.setOnClickListener {
+            if (SleepService.running) {
+                Toast.makeText(this, "記錄中無法修改，請先停止", Toast.LENGTH_SHORT).show()
+            } else {
+                onClick()
+            }
+        }
+        settingsBox.addView(row)
+    }
+
+    private fun refreshSettings() {
+        settingsBox.removeAllViews()
+        val sens = Prefs.sensitivity(this)
+        settingRow("偵測靈敏度", Prefs.sensitivityName(sens)) {
+            val names = arrayOf("低（靠近馬路建議）", "中", "高")
+            AlertDialog.Builder(this)
+                .setTitle("偵測靈敏度")
+                .setItems(names) { _, which ->
+                    Prefs.setSensitivity(this, which)
+                    refreshSettings()
+                }
+                .show()
+        }
+        val days = Prefs.retentionDays(this)
+        settingRow("錄音保留", Prefs.retentionName(days)) {
+            val values = intArrayOf(3, 7, 14, 30, 0)
+            val names = Array(values.size) { Prefs.retentionName(values[it]) }
+            AlertDialog.Builder(this)
+                .setTitle("錄音保留天數")
+                .setItems(names) { _, which ->
+                    Prefs.setRetentionDays(this, values[which])
+                    val n = Session.cleanupOldClips(this, values[which])
+                    if (n > 0) Toast.makeText(this, "已刪除 $n 段過期錄音", Toast.LENGTH_SHORT).show()
+                    refreshSettings()
+                    refreshList()
+                }
+                .show()
+        }
+        settingRow("車聲等環境噪音", if (Prefs.saveNoise(this)) "也存錄音" else "不存錄音") {
+            Prefs.setSaveNoise(this, !Prefs.saveNoise(this))
+            refreshSettings()
+        }
+        val learned = Learner.count(this)
+        if (learned > 0) {
+            settingRow("已學會的修正", "$learned 筆（點此清除）") {
+                AlertDialog.Builder(this)
+                    .setMessage("清除所有你修正過的分類記憶？")
+                    .setPositiveButton("清除") { _, _ ->
+                        Learner.clear(this)
+                        refreshSettings()
+                    }
+                    .setNegativeButton("取消", null)
+                    .show()
+            }
+        }
+        settingsBox.addView(
+            Ui.text(this, "過期只刪除錄音檔，每晚的分數和統計會保留。", 12f, Ui.DIM)
+        )
     }
 
     private fun openNight(id: String) {

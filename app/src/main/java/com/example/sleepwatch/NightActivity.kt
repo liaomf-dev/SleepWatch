@@ -60,6 +60,7 @@ class NightActivity : Activity() {
         )
         summary.append("說話／夢話：").append(s.count(Session.TYPE_TALK)).append(" 次\n")
         summary.append("其他聲響：").append(s.count(Session.TYPE_OTHER)).append(" 次\n")
+        summary.append("環境噪音（車聲等，不扣分）：").append(s.count(Session.TYPE_NOISE)).append(" 次\n")
         summary.append("安靜時間：").append(s.quietPercent()).append("%")
         scoreCard.addView(Ui.text(this, summary.toString(), 15f, Ui.TEXT), Ui.full(this, 8))
         root.addView(scoreCard, Ui.full(this, 16))
@@ -70,7 +71,7 @@ class NightActivity : Activity() {
         chartCard.addView(NightChartView(this, s), Ui.full(this, 10, Ui.dp(this, 170)))
         val legend = Ui.text(
             this,
-            "長條：每分鐘音量（淺色為最大值）　色塊：橘＝打呼　藍＝說話　灰＝其他" +
+            "長條：每分鐘音量（淺色為最大值）\n色塊：橘＝打呼　藍＝說話　淺灰＝其他　深灰＝環境噪音" +
                 if (s.delayMin > 0) "\n開頭較暗的區域為延遲偵測時段" else "",
             12f, Ui.DIM
         )
@@ -85,17 +86,19 @@ class NightActivity : Activity() {
             Pair(null, "全部"),
             Pair(Session.TYPE_SNORE, "打呼"),
             Pair(Session.TYPE_TALK, "說話"),
+            Pair(Session.TYPE_NOISE, "噪音"),
             Pair(Session.TYPE_OTHER, "其他")
         )
         for ((type, label) in options) {
             val b = Ui.button(this, label, Ui.CARD)
-            b.textSize = 14f
+            b.textSize = 13f
+            b.setPadding(0, 0, 0, 0)
             b.setOnClickListener {
                 filter = type
                 renderEvents()
             }
             val lp = LinearLayout.LayoutParams(0, Ui.dp(this, 44), 1f)
-            lp.marginEnd = Ui.dp(this, 6)
+            lp.marginEnd = Ui.dp(this, 4)
             filterRow.addView(b, lp)
             filterButtons.add(Pair(type, b))
         }
@@ -174,6 +177,15 @@ class NightActivity : Activity() {
             infoLp.marginStart = Ui.dp(this, 10)
             row.addView(info, infoLp)
 
+            val fix = Ui.button(this, "改", Ui.CARD)
+            fix.textSize = 13f
+            fix.background = Ui.rounded(0xFF2A3360.toInt(), Ui.dp(this, 10))
+            fix.setPadding(0, 0, 0, 0)
+            fix.setOnClickListener { relabel(e) }
+            val fixLp = LinearLayout.LayoutParams(Ui.dp(this, 44), Ui.dp(this, 40))
+            fixLp.marginEnd = Ui.dp(this, 6)
+            row.addView(fix, fixLp)
+
             val f = File(session.dir, e.file)
             if (e.file.isNotEmpty() && f.exists()) {
                 val play = Ui.button(this, "▶ 播放", Ui.ACCENT_DARK)
@@ -181,10 +193,32 @@ class NightActivity : Activity() {
                 play.setOnClickListener { togglePlay(f, play) }
                 row.addView(play)
             } else {
-                row.addView(Ui.text(this, "未存錄音", 12f, Ui.DIM))
+                row.addView(Ui.text(this, if (e.type == Session.TYPE_NOISE) "未存\n錄音" else "錄音\n已刪除", 12f, Ui.DIM))
             }
             eventsBox.addView(row, Ui.full(this, 8))
         }
+    }
+
+    /** 修正分類，並讓 App 記住，之後遇到類似的聲音自動套用 */
+    private fun relabel(e: SoundEvent) {
+        val types = Session.ALL_TYPES
+        val names = Array(types.size) { Session.typeName(types[it]) }
+        AlertDialog.Builder(this)
+            .setTitle("這段其實是？")
+            .setItems(names) { _, which ->
+                val t = types[which]
+                if (t != e.type) {
+                    e.type = t
+                    try { session.save() } catch (_: Exception) { }
+                    Learner.add(this, e.features, t)
+                    Toast.makeText(this, "已修正，之後類似的聲音會自動判斷為「${Session.typeName(t)}」", Toast.LENGTH_LONG).show()
+                    val i = intent
+                    finish()
+                    startActivity(i)
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
     }
 
     private fun togglePlay(file: File, button: Button) {

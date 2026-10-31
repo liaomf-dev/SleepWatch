@@ -56,7 +56,6 @@ class SleepService : Service() {
         private const val MAX_CLIP_FRAMES = 300   // 單段錄音最長 30 秒
         private const val MIN_LOUD_FRAMES = 4     // 少於 0.4 秒的聲音忽略
         private const val MAX_CLIPS = 120         // 一晚最多存 120 段錄音
-        private const val TRIGGER_DB = 12.0       // 高於環境噪音多少 dB 才算事件
     }
 
     private var thread: Thread? = null
@@ -140,6 +139,7 @@ class SleepService : Service() {
             } else {
                 lastFinishedId = s.id
             }
+            try { Session.cleanupOldClips(this, Prefs.retentionDays(this), s.id) } catch (_: Exception) { }
         }
         session = null
         wakeLock?.let { if (it.isHeld) it.release() }
@@ -225,28 +225,23 @@ class SleepService : Service() {
         var clip = ByteArrayOutputStream()
         var evStart = 0L
         var clipFrames = 0
-        var loudFrames = 0
         var quietRun = 0
-        var zcrSum = 0.0
-        var lowSum = 0.0
         var peak = 0
-        var bursts = 0
-        var prevLoud = false
+        var analyzer = EventAnalyzer(RATE)
+        val trigger = Prefs.triggerDb(this)
+        val saveNoise = Prefs.saveNoise(this)
+        val learned = Learner.load(this)
 
         fun endEvent() {
             inEvent = false
-            if (loudFrames < MIN_LOUD_FRAMES) return
-            val zcrAvg = zcrSum / loudFrames
-            val lowAvg = lowSum / loudFrames
-            // 打呼：能量集中在低頻、過零率低；說話：中高頻為主；其他：很短的單一聲響或接近白噪音的寬頻雜音
-            val type = when {
-                loudFrames < 8 && bursts <= 1 -> Session.TYPE_OTHER
-                lowAvg > 0.55 && zcrAvg < 1200.0 -> Session.TYPE_SNORE
-                zcrAvg < 6500.0 -> Session.TYPE_TALK
-                else -> Session.TYPE_OTHER
-            }
+            val a = analyzer
+            if (a.loudCount < MIN_LOUD_FRAMES) return
+            val f = a.features()
+            // 先看使用者修正過、很像的例子；沒有的話用規則判斷
+            val type = Learner.match(learned, f) ?: a.classify(f)
             var fileName = ""
-            if (clipsSaved < MAX_CLIPS) {
+            val wantClip = type != Session.TYPE_NOISE || saveNoise
+            if (wantClip && clipsSaved < MAX_CLIPS) {
                 fileName = "clip_$evStart.wav"
                 try {
                     writeWav(File(session.dir, fileName), clip.toByteArray())
@@ -256,7 +251,7 @@ class SleepService : Service() {
                 }
             }
             session.events.add(
-                SoundEvent(evStart.coerceAtLeast(0L), loudFrames / 10f, type, peak, fileName)
+                SoundEvent(evStart.coerceAtLeast(0L), a.loudCount / 10f, type, peak, fileName, f)
             )
             eventCount = session.events.size
         }
@@ -310,7 +305,7 @@ class SleepService : Service() {
             // 環境噪音基準：變安靜時快速下降、變吵時慢慢上升
             if (floor < 0) floor = db.toDouble()
             floor += if (db < floor) (db - floor) * 0.05 else (db - floor) * 0.002
-            val loud = db > max(floor, 20.0) + TRIGGER_DB
+            val loud = db > max(floor, 20.0) + trigger
 
             val offset = frameIndex * 100L
             frameIndex++
@@ -323,30 +318,22 @@ class SleepService : Service() {
                 clip = ByteArrayOutputStream()
                 for (p in pre) writePcm(clip, p)
                 clipFrames = pre.size
-                loudFrames = 0
                 quietRun = 0
-                zcrSum = 0.0
-                lowSum = 0.0
                 peak = 0
-                bursts = 0
-                prevLoud = false
+                analyzer = EventAnalyzer(RATE)
             }
             if (inEvent) {
                 if (clipFrames < MAX_CLIP_FRAMES) {
                     writePcm(clip, frame)
                     clipFrames++
                 }
+                analyzer.add(frame, loud, zcr, lowRatio)
                 if (loud) {
-                    loudFrames++
-                    zcrSum += zcr
-                    lowSum += lowRatio
                     if (db > peak) peak = db
-                    if (!prevLoud) bursts++
                     quietRun = 0
                 } else {
                     quietRun++
                 }
-                prevLoud = loud
                 if (quietRun >= END_QUIET_FRAMES || clipFrames >= MAX_CLIP_FRAMES) endEvent()
             }
 
