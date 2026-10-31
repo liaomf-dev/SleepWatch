@@ -11,11 +11,11 @@ val keystorePath: String? = System.getenv("KEYSTORE_FILE")
 val keystorePassword: String? = System.getenv("KEYSTORE_PASSWORD")
 
 android {
-    namespace = "com.example.eldercall"
+    namespace = "com.example.sleepwatch"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "io.github.liaomfdev.eldercall"
+        applicationId = "io.github.liaomfdev.sleepwatch"
         minSdk = 24
         targetSdk = 35
         versionCode = runNumber
